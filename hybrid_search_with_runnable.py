@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict, Any
 import time
 import requests
 import logging
@@ -40,16 +40,9 @@ class CustomAPIEmbeddings(Embeddings):
         logger.info(f"CustomAPIEmbeddings initialized with URL: {api_url}")
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of documents"""
-        logger.info(f"Embedding {len(texts)} documents...")
-        embeddings = []
-        for idx, text in enumerate(texts):
-            embedding = self.embed_query(text)
-            embeddings.append(embedding)
-            if (idx + 1) % 10 == 0:
-                logger.info(f"Embedded {idx + 1}/{len(texts)} documents")
-        logger.info(f"Successfully embedded all {len(texts)} documents")
-        return embeddings
+        """Embed documents - used by LangChain for validation"""
+        logger.info(f"embed_documents called for {len(texts)} texts")
+        return [self.embed_query(text) for text in texts]
     
     def embed_query(self, text: str) -> List[float]:
         """Embed a single query"""
@@ -98,7 +91,6 @@ dense_vectorstore = QdrantVectorStore(
 dense_retriever = dense_vectorstore.as_retriever(search_kwargs={"k": K})
 logger.info("Dense retriever initialized successfully")
 
-# Sparse retriever
 logger.info("Initializing sparse retriever...")
 sparse_model = FastEmbedSparse(model_name="Qdrant/bm25")
 sparse_vectorstore = QdrantVectorStore(
@@ -113,7 +105,6 @@ sparse_vectorstore = QdrantVectorStore(
 sparse_retriever = sparse_vectorstore.as_retriever(search_kwargs={"k": K})
 logger.info("Sparse retriever initialized successfully")
 
-# Ensemble retriever
 logger.info("Creating ensemble retriever...")
 ensemble_retriever = EnsembleRetriever(
     retrievers=[dense_retriever, sparse_retriever],
@@ -121,29 +112,27 @@ ensemble_retriever = EnsembleRetriever(
 )
 logger.info("Ensemble retriever created with weights [0.5, 0.5]")
 
-# === LLM Setup ===
 logger.info("Initializing LLM...")
 llm = VLLMOpenAI(
     openai_api_key="EMPTY",
     openai_api_base=LLM_URL,
     model_name=LLM_MODEL,
-    temperature=0.0
+    temperature=0.0,
+    max_tokens=2048
 )
 logger.info("LLM initialized successfully")
 
-# === Prompt Template ===
-template = """You are an expert assistant. Use the context below to reason step by step before giving a final answer. Think logically and only answer based on the provided information.
+template = """You are an expert assistant for question-answering tasks. 
+Use the following pieces of retrieved context to answer the question. 
+If you don't know the answer, just say that you don't know. 
 
-Context:
-{context}
-
-Question: {question}
-
+Question: {question} 
+Context: {context} 
+Answer:
 """
 
 rag_prompt = ChatPromptTemplate.from_template(template)
 
-# === RAG Chain ===
 logger.info("Creating RAG chain...")
 rag_chain = (
     RunnableParallel(
@@ -156,57 +145,67 @@ rag_chain = (
 logger.info("RAG chain created successfully")
 
 def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    return "\n\n".join(f"{i+1}. {doc.page_content}" for i, doc in enumerate(docs))
+
+def extract_sources(docs):
+    unique_sources = []
+    seen_sources = set()
+    
+    for doc in docs:
+        if hasattr(doc, 'metadata') and 'source_path' in doc.metadata:
+            source = doc.metadata.get('source_path') or doc.metadata.get('file_name', 'Unknown')
+            
+            # Only add if not already seen
+            if source not in seen_sources:
+                seen_sources.add(source)
+                unique_sources.append(source)
+    
+    # Return sources without numbering
+    return "\n".join(unique_sources)
 
 logger.info("Retrievers and LLM ready. API is now accepting requests.")
 
-# === API Schema ===
 class RAGGenerateRequest(BaseModel):
     query: str
 
 class RAGGenerateResponse(BaseModel):
-    answer: str
-    context: List[str]
-    retrieval_time: float
-    formatting_time: float
-    generation_time: float
-    total_time: float
+    query: str
+    result: str
+    citations: str
+    source: str
 
 @app.post("/rag/generate", response_model=RAGGenerateResponse)
 async def generate_rag(request: RAGGenerateRequest):
     logger.info(f"Received query: '{request.query[:100]}...'")
     total_start = time.time()
 
-    # Step 1: Retrieve documents
     logger.info("Step 1: Starting document retrieval...")
     retrieval_start = time.time()
     docs = ensemble_retriever.invoke(request.query)
     retrieval_time = time.time() - retrieval_start
     logger.info(f"Retrieved {len(docs)} documents in {retrieval_time:.3f}s")
 
-    # Step 2: Format context
     logger.info("Step 2: Formatting context...")
     formatting_start = time.time()
     context_str = format_docs(docs)
     formatting_time = time.time() - formatting_start
     logger.info(f"Context formatted ({len(context_str)} chars) in {formatting_time:.3f}s")
 
-    # Step 3: Invoke RAG chain
     logger.info("Step 3: Invoking RAG chain...")
     generation_start = time.time()
     answer = rag_chain.invoke({"question": request.query, "context": context_str})
     generation_time = time.time() - generation_start
     logger.info(f"RAG chain generated response (length: {len(answer)} chars)")
 
+    sources = extract_sources(docs)
+    
     total_time = time.time() - total_start
     
     logger.info(f"Request completed in {total_time:.3f}s (retrieval: {retrieval_time:.3f}s, formatting: {formatting_time:.3f}s, generation: {generation_time:.3f}s)")
 
     return RAGGenerateResponse(
-        answer=answer,
-        context=[doc.page_content for doc in docs],
-        retrieval_time=retrieval_time,
-        formatting_time=formatting_time,
-        generation_time=generation_time,
-        total_time=total_time
+        query=request.query,
+        result=answer,
+        citations=context_str,
+        source=sources
     )
