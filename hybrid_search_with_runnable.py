@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 DENSE_EMBEDDING_URL = "http://192.168.1.11:8073/encode_text"
 QDRANT_URL = "http://192.168.1.13:6333"
 COLLECTION_NAME = "pi_scout_case_docs"
-K = 10
+K = 5
 LLM_URL = "http://192.168.1.11:8077/v1"
 LLM_MODEL = "RedHatAI/gemma-3-27b-it-quantized.w4a16"
 
@@ -155,12 +155,10 @@ def extract_sources(docs):
         if hasattr(doc, 'metadata') and 'source_path' in doc.metadata:
             source = doc.metadata.get('source_path') or doc.metadata.get('file_name', 'Unknown')
             
-            # Only add if not already seen
             if source not in seen_sources:
                 seen_sources.add(source)
                 unique_sources.append(source)
     
-    # Return sources without numbering
     return "\n".join(unique_sources)
 
 logger.info("Retrievers and LLM ready. API is now accepting requests.")
@@ -182,6 +180,10 @@ async def generate_rag(request: RAGGenerateRequest):
     logger.info("Step 1: Starting document retrieval...")
     retrieval_start = time.time()
     docs = ensemble_retriever.invoke(request.query)
+    
+    # Limit to exactly K documents
+    docs = docs[:K]
+    
     retrieval_time = time.time() - retrieval_start
     logger.info(f"Retrieved {len(docs)} documents in {retrieval_time:.3f}s")
 
