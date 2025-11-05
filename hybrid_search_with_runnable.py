@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 DENSE_EMBEDDING_URL = "http://192.168.1.11:8073/encode_text"
 QDRANT_URL = "http://192.168.1.13:6333"
-COLLECTION_NAME = "1000_pages_no_overlap"
+COLLECTION_NAME = "pi_scout_case_docs"
 K = 10
 LLM_URL = "http://192.168.1.11:8077/v1"
 LLM_MODEL = "RedHatAI/gemma-3-27b-it-quantized.w4a16"
@@ -92,8 +92,8 @@ dense_vectorstore = QdrantVectorStore(
     collection_name=COLLECTION_NAME,
     embedding=embeddings,
     retrieval_mode=RetrievalMode.DENSE,
-    vector_name="dense",
-    content_payload_key="text"
+    vector_name="dense-embed",
+    content_payload_key="page_content"
 )
 dense_retriever = dense_vectorstore.as_retriever(search_kwargs={"k": K})
 logger.info("Dense retriever initialized successfully")
@@ -107,8 +107,8 @@ sparse_vectorstore = QdrantVectorStore(
     collection_name=COLLECTION_NAME,
     sparse_embedding=sparse_model,
     retrieval_mode=RetrievalMode.SPARSE,
-    sparse_vector_name="sparse",
-    content_payload_key="text"
+    sparse_vector_name="sparse-embed",
+    content_payload_key="page_content"
 )
 sparse_retriever = sparse_vectorstore.as_retriever(search_kwargs={"k": K})
 logger.info("Sparse retriever initialized successfully")
@@ -139,7 +139,7 @@ Context:
 
 Question: {question}
 
-Think step by step, then provide your final answer clearly marked as: "Answer: <final answer>"."""
+"""
 
 rag_prompt = ChatPromptTemplate.from_template(template)
 
